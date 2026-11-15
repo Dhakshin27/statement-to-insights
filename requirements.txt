@@ -1,0 +1,20 @@
+
+streamlit
+pandas
+pydantic
+pdfplumber
+pypdf
+
+# LLM providers
+google-genai>=2.25.0
+openai>=1.30.0
+ollama>=0.3.0
+
+# RAG (optional future use)
+langchain
+langchain-core
+langchain-google-genai
+langchain-chroma
+chromadb
+
+pytest
