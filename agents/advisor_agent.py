@@ -1,65 +1,51 @@
-from typing import Dict
+"""Advisor agent: turn exact calculations into practical financial guidance."""
+
+from __future__ import annotations
+
+from typing import Dict, Optional
+
+from core.config import OVERSPENDING_THRESHOLD
 from core.llm_factory import LLMClient
 
 
-def _build_prompt(analysis: Dict) -> str:
-    """Build a natural-language prompt from the analysis dictionary."""
-    total_spent = analysis.get("total_spent", 0)
-    total_income = analysis.get("total_income", 0)
-    monthly = analysis.get("monthly_totals", {})
-    cat_totals = analysis.get("category_totals", {})
-    top_cats = analysis.get("top_expense_categories", [])
-
-    lines = [
-        "You are a friendly personal-finance assistant.",
-        "Based on the financial summary below, provide:",
-        "1. Plain-language insights about spending patterns.",
-        "2. Overspending alerts for any category exceeding 20% of total income.",
-        "3. Practical, actionable suggestions to save money.",
-        "",
-        "Keep your response concise, structured with bullet points, and focused on key takeaways.",
-        "",
-        f"Total income : ₹{total_income:,.2f}",
-        f"Total spent  : ₹{total_spent:,.2f}",
-    ]
-
-    if monthly:
-        lines.append("")
-        lines.append("Monthly net amounts:")
-        for month in sorted(monthly.keys()):
-            lines.append(f"  {month}: ₹{monthly[month]:,.2f}")
-
-    if cat_totals:
-        lines.append("")
-        lines.append("Spending by category:")
-        for cat, amt in sorted(cat_totals.items(), key=lambda x: x[1]):
-            lines.append(f"  {cat}: ₹{amt:,.2f}")
-
-    if top_cats:
-        lines.append("")
-        lines.append("Top 3 expense categories:")
-        for cat, amt in top_cats:
-            lines.append(f"  {cat}: ₹{amt:,.2f}")
-
+def deterministic_advice(analysis: Dict) -> str:
+    """Produce useful guidance when an LLM is not configured or unavailable."""
+    spent, income = analysis.get("total_spent", 0.0), analysis.get("total_income", 0.0)
+    net = analysis.get("net_cash_flow", income - spent)
+    lines = ["### Snapshot", f"- You spent **₹{spent:,.0f}** and received **₹{income:,.0f}** in this statement period.", f"- Your net cash flow is **{'+' if net >= 0 else ''}₹{net:,.0f}**."]
+    if income:
+        lines.append(f"- Your estimated savings rate is **{analysis.get('savings_rate', 0):.1f}%**.")
+    alerts = []
+    if income:
+        for category, amount in analysis.get("category_totals", {}).items():
+            share = amount / income
+            if share > OVERSPENDING_THRESHOLD:
+                alerts.append(f"- **{category}** is ₹{amount:,.0f} ({share:.0%} of income), above the 20% watch level.")
+    if alerts:
+        lines.extend(["\n### Watch list", *alerts])
+    elif analysis.get("top_expense_categories"):
+        category, amount = analysis["top_expense_categories"][0]
+        lines.extend(["\n### Focus", f"- Your biggest spending area is **{category}** at ₹{amount:,.0f}; review its recurring purchases first."])
+    lines.extend(["\n### One practical next step", "- Set a weekly cap for your largest discretionary category and check it against this dashboard before the next statement cycle."])
     return "\n".join(lines)
 
 
-def advise(analysis: Dict, client: LLMClient, model_name: str = "") -> str:
-    """Generate plain-language financial insights.
+def _build_prompt(analysis: Dict, context: str = "") -> str:
+    category_totals = analysis.get("category_totals", {})
+    lines = ["You are a friendly personal-finance assistant. Use only the supplied numbers.", "Give a short Markdown answer with patterns, any 20%-of-income alerts, and 2 practical savings actions.", f"Income: ₹{analysis.get('total_income', 0):,.2f}; Spending: ₹{analysis.get('total_spent', 0):,.2f}; Net: ₹{analysis.get('net_cash_flow', 0):,.2f}", "Spending by category (positive expense totals):", *[f"- {category}: ₹{amount:,.2f}" for category, amount in sorted(category_totals.items(), key=lambda item: item[1], reverse=True)]]
+    if context:
+        lines.extend(["Relevant transaction descriptions:", context])
+    return "\n".join(lines)
 
-    Parameters
-    ----------
-    analysis   : dict returned by analyze_transactions()
-    client     : LLMClient instance (provider-agnostic wrapper)
-    model_name : ignored — model is already baked into LLMClient; kept for
-                 backward-compat with old callers that pass it.
 
-    Returns
-    -------
-    str  – the model's insight text
-    """
+def advise(analysis: Dict, client: Optional[LLMClient] = None, model_name: str = "", context: str = "") -> str:  # noqa: ARG001
+    """Generate advice, with a deterministic fallback if the model fails."""
     if not analysis:
         return "No transaction data found. Please upload a valid statement."
-
-    prompt = _build_prompt(analysis)
-    return client.generate(prompt, timeout=90) or "No response from the model."
+    if client is None:
+        return deterministic_advice(analysis)
+    try:
+        reply = client.generate(_build_prompt(analysis, context), timeout=90)
+        return reply.strip() if reply and reply.strip() else deterministic_advice(analysis)
+    except Exception:
+        return deterministic_advice(analysis)
