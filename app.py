@@ -144,7 +144,6 @@ st.markdown(
 )
 
 
-
 # ── File Ingestion & Demo Loader ──────────────────────────────────────────────
 upload_col, action_col = st.columns([3, 1])
 
